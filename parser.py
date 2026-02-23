@@ -4,6 +4,7 @@ parser.py
 以及维护同级目录下所有 .livp 文件的播放列表。
 """
 
+import hashlib
 import shutil
 import time
 import zipfile
@@ -29,6 +30,16 @@ class LivpParser:
         if not self.temp_dir.exists():
             self.temp_dir.mkdir(parents=True, exist_ok=True)
 
+    def _build_cache_path(self, file_path: str, kind: str, ext: str) -> Path:
+        file_path_obj = Path(file_path).resolve()
+        try:
+            mtime = file_path_obj.stat().st_mtime_ns
+        except OSError:
+            mtime = time.time_ns()
+        raw = f"{file_path_obj}:{mtime}"
+        digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+        return self.temp_dir / f"{kind}_{digest}{ext}"
+
     def purge_all(self):
         """清空整个临时缓存目录，释放磁盘空间后重新创建空目录。"""
         if self.temp_dir.exists():
@@ -51,13 +62,11 @@ class LivpParser:
                 for file_info in zf.infolist():
                     filename = file_info.filename.lower()
                     if filename.endswith((".jpg", ".jpeg", ".heic")):
-                        target = (
-                            self.temp_dir
-                            / f"img_{int(time.time() * 1000)}{Path(filename).suffix}"
-                        )
-                        with zf.open(file_info) as source, open(
-                            target, "wb"
-                        ) as dest:
+                        ext = Path(filename).suffix
+                        target = self._build_cache_path(file_path, "img", ext)
+                        if target.exists():
+                            return str(target.absolute())
+                        with zf.open(file_info) as source, open(target, "wb") as dest:
                             shutil.copyfileobj(source, dest)
                         return str(target.absolute())
         except Exception as e:
@@ -80,13 +89,11 @@ class LivpParser:
                 for file_info in zf.infolist():
                     filename = file_info.filename.lower()
                     if filename.endswith((".mov", ".mp4")):
-                        target = (
-                            self.temp_dir
-                            / f"vid_{int(time.time() * 1000)}{Path(filename).suffix}"
-                        )
-                        with zf.open(file_info) as source, open(
-                            target, "wb"
-                        ) as dest:
+                        ext = Path(filename).suffix
+                        target = self._build_cache_path(file_path, "vid", ext)
+                        if target.exists():
+                            return str(target.absolute())
+                        with zf.open(file_info) as source, open(target, "wb") as dest:
                             shutil.copyfileobj(source, dest)
                         return str(target.absolute())
         except Exception as e:
@@ -121,9 +128,6 @@ class Playlist:
         target_path = Path(file_path_str).absolute()
         if not target_path.exists() or not target_path.is_file():
             return False
-
-        # 换文件夹或新文件时，清理旧缓存释放磁盘
-        self.parser.purge_all()
 
         directory = target_path.parent
         self.files = sorted(

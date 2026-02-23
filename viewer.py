@@ -242,6 +242,8 @@ class LivpViewerApp:
         livp_path = self.playlist.get_current_live_photo_path()
         if not livp_path:
             return
+        self.status_text.value = "正在解析图片..."
+        self.page.update()
         img_path = self.playlist.parser.extract_image(livp_path)
         if not img_path:
             return
@@ -261,6 +263,8 @@ class LivpViewerApp:
         livp_path = self.playlist.get_current_live_photo_path()
         if not livp_path:
             return
+        self.status_text.value = "正在解析视频..."
+        self.page.update()
         vid_path = self.playlist.parser.extract_video(livp_path)
         if not vid_path:
             return
@@ -320,14 +324,17 @@ class LivpViewerApp:
         if not livp_path:
             return
         filename = Path(livp_path).name
-        # 使用 tkinter 的剪贴板 API（已有依赖，跨平台兼容）
-        import tkinter as tk
-        root = tk.Tk()
-        root.withdraw()
-        root.clipboard_clear()
-        root.clipboard_append(filename)
-        root.update()
-        root.destroy()
+        if hasattr(self.page, "set_clipboard"):
+            self.page.set_clipboard(filename)
+        else:
+            import tkinter as tk
+
+            root = tk.Tk()
+            root.withdraw()
+            root.clipboard_clear()
+            root.clipboard_append(filename)
+            root.update()
+            root.destroy()
         self._show_toast(f"已复制: {filename}")
 
     def _on_path_submit(self, e):
@@ -348,8 +355,7 @@ class LivpViewerApp:
 
     def on_btn_open_click(self, e):
         """处理"打开文件"按钮点击：弹出文件选择对话框选择 .livp 文件。"""
-        def _open_dialog():
-            """在子线程中拉起 tkinter 文件对话框，避免阻塞 Flet 主线程。"""
+        try:
             import tkinter as tk
             from tkinter import filedialog
 
@@ -363,8 +369,9 @@ class LivpViewerApp:
             root.destroy()
             if picked_path:
                 self._open_file_by_path(picked_path)
-
-        threading.Thread(target=_open_dialog, daemon=True).start()
+        except Exception as ex:
+            self.status_text.value = f"打开文件失败: {ex}"
+            self.page.update()
 
     def on_prev_click(self, e):
         """处理"上一张"按钮点击：切换到播放列表中的前一个文件。"""
