@@ -1,0 +1,24 @@
+name: build-windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v3
+      - name: Build
+        shell: pwsh
+        env:
+          PUB_HOSTED_URL: https://pub.dev
+          FLUTTER_STORAGE_BASE_URL: https://storage.googleapis.com
+        run: uv run flet build windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: build/windows
