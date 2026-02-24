@@ -246,12 +246,16 @@ class LivpViewerApp:
         self.page.update()
         img_path = self.playlist.parser.extract_image(livp_path)
         if not img_path:
+            self.status_text.value = "解析图片失败"
+            self.page.update()
             return
 
         self.media_container.content = ft.Image(
             src=img_path, fit="contain", expand=True
         )
-        self.btn_play.text = "播放视频"
+        self.btn_play.content = "播放视频"
+        filename = Path(livp_path).name
+        self.status_text.value = f"正在查看: {filename}"
         self.page.update()
 
     def switch_to_video(self, autoplay=False):
@@ -267,6 +271,8 @@ class LivpViewerApp:
         self.page.update()
         vid_path = self.playlist.parser.extract_video(livp_path)
         if not vid_path:
+            self.status_text.value = "解析视频失败"
+            self.page.update()
             return
 
         # 根据循环开关决定播放模式
@@ -286,7 +292,9 @@ class LivpViewerApp:
         )
 
         self.media_container.content = video
-        self.btn_play.text = "显示照片"
+        self.btn_play.content = "查看图片"
+        filename = Path(livp_path).name
+        self.status_text.value = f"正在查看: {filename}"
         self.page.update()
 
     def _on_video_complete(self, e):
@@ -384,7 +392,7 @@ class LivpViewerApp:
             self.load_media_to_ui()
 
     def on_play_click(self, e):
-        """处理"播放视频/显示照片"按钮点击：在图片和视频模式之间切换。"""
+        """处理"播放视频/查看图片"按钮点击：在图片和视频模式之间切换。"""
         if isinstance(self.media_container.content, ftv.Video):
             # 当前正在播放视频，切换回静态图片
             self.switch_to_image()
