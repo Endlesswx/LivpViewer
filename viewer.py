@@ -33,6 +33,9 @@ class LivpViewerApp:
         # 加载用户配置
         self._user_config = load_config()
 
+        # 文件选择器
+        self.file_picker = ft.FilePicker()
+
         # === UI 组件 ===
         self.media_container = ft.Container(
             expand=True,
@@ -332,17 +335,7 @@ class LivpViewerApp:
         if not livp_path:
             return
         filename = Path(livp_path).name
-        if hasattr(self.page, "set_clipboard"):
-            self.page.set_clipboard(filename)
-        else:
-            import tkinter as tk
-
-            root = tk.Tk()
-            root.withdraw()
-            root.clipboard_clear()
-            root.clipboard_append(filename)
-            root.update()
-            root.destroy()
+        self.page.set_clipboard(filename)
         self._show_toast(f"已复制: {filename}")
 
     def _on_path_submit(self, e):
@@ -361,22 +354,18 @@ class LivpViewerApp:
             # 正在播放视频时切换了循环开关，重新加载视频以应用新的播放模式
             self.switch_to_video(autoplay=True)
 
-    def on_btn_open_click(self, e):
+    async def on_btn_open_click(self, e):
         """处理"打开文件"按钮点击：弹出文件选择对话框选择 .livp 文件。"""
         try:
-            import tkinter as tk
-            from tkinter import filedialog
-
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            picked_path = filedialog.askopenfilename(
-                title="选择 Livp 文件",
-                filetypes=[("Livp files", "*.livp")],
+            files = await self.file_picker.pick_files(
+                dialog_title="选择 Livp 文件",
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["livp"]
             )
-            root.destroy()
-            if picked_path:
-                self._open_file_by_path(picked_path)
+            if files and len(files) > 0:
+                picked_path = files[0].path
+                if picked_path:
+                    self._open_file_by_path(picked_path)
         except Exception as ex:
             self.status_text.value = f"打开文件失败: {ex}"
             self.page.update()
