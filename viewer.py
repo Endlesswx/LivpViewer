@@ -8,6 +8,7 @@ viewer.py
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import flet as ft
@@ -294,6 +295,7 @@ class LivpViewerApp:
             on_complete=on_complete_handler,
         )
 
+        self._video_start_time = time.time()
         self.media_container.content = video
         self.btn_play.content = "查看图片"
         filename = Path(livp_path).name
@@ -302,6 +304,9 @@ class LivpViewerApp:
 
     def _on_video_complete(self, e):
         """视频播放完毕的回调：在非循环模式下自动切换回静态图片。"""
+        if hasattr(self, '_video_start_time') and time.time() - self._video_start_time < 0.5:
+            # 忽略刚加载时因底层播放器时长未就绪而瞬间触发的虚假 complete 事件
+            return
         self.switch_to_image()
 
     def _open_file_by_path(self, file_path: str):
