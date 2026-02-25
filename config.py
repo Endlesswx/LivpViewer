@@ -16,6 +16,7 @@ CONFIG_PATH = Path(__file__).parent / "config.ini"
 DEFAULTS = {
     "auto_play": "false",
     "loop": "false",
+    "last_file": "",
 }
 
 

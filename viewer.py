@@ -202,19 +202,28 @@ class LivpViewerApp:
 
         支持打包为 EXE 后，将 .livp 文件与 EXE 关联，双击 .livp 文件时
         Windows 会将文件路径作为第一个命令行参数传入。
+        若没有命令行参数，则尝试恢复上次打开的文件。
         """
         for arg in sys.argv[1:]:
             if arg.lower().endswith(".livp") and Path(arg).exists():
                 success = self.playlist.load_from_file(arg)
                 if success:
                     self.load_media_to_ui()
-                break
+                return
+
+        # 没有命令行参数，尝试恢复上次打开的文件
+        last_file = self._user_config.get("last_file", "")
+        if last_file and Path(last_file).exists():
+            success = self.playlist.load_from_file(last_file)
+            if success:
+                self.load_media_to_ui()
 
     def _save_current_config(self):
-        """将当前开关状态保存到 INI 配置文件。"""
+        """将当前开关状态和最后打开的文件路径保存到 INI 配置文件。"""
         settings = {
             "auto_play": str(self.switch_auto_play.value).lower(),
             "loop": str(self.switch_loop.value).lower(),
+            "last_file": self.playlist.get_current_live_photo_path(),
         }
         save_config(settings)
 
@@ -253,6 +262,9 @@ class LivpViewerApp:
         self.status_text.value = f"正在查看: {filename}"
         self.btn_play.disabled = False
         self.btn_open_location.disabled = False
+
+        # 记住当前文件路径，下次启动时自动恢复
+        self._save_current_config()
 
         if self.switch_auto_play.value:
             # 用户要求打开时直接播放视频

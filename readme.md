@@ -1,33 +1,63 @@
-# Livp Viewer (Flet)
+# Livp Viewer
 
-专为 Apple Live Photo (`.livp`) 打造的极简查看器，基于 Python 与 Flet 开发。
+Windows 桌面端 .livp (Live Photo) 文件查看器，可浏览静态图片并播放内嵌的动态视频。
 
-## 特性
-- 默认展示 `.livp` 中的高画质静态照片
-- 一键切换查看文件中包含的动态视频（`.mov` 或 `.mp4`）
-- 扫描同级目录下所有 `.livp` 文件，支持上一张/下一张切换
-- 提供自动播放与循环播放开关
+## 功能
+
+- 打开 .livp 文件，默认展示静态图片，可切换播放视频
+- 自动扫描同目录下所有 .livp 文件，支持上一张/下一张切换
+- 鼠标左键单击：图片模式下开始播放视频，视频模式下播放/暂停切换
+- 鼠标右键单击：切换全屏/窗口模式
+- 非全屏时拖动媒体区域可移动窗口
+- 点击文件名复制到剪贴板
+- 支持自动播放视频、循环播放，设置自动保存
+- 单实例运行，双击 .livp 文件秒开（复用已运行实例）
+- 支持命令行参数传入文件路径，可关联 .livp 文件类型
 
 ## 快速开始
-本项目使用 `uv` 作为包管理器。
 
-1. 启动应用（生产模式）
-   ```bash
-   uv run main.py
-   ```
+需要 Python 3.12+，使用 [uv](https://docs.astral.sh/uv/) 管理依赖：
 
-2. 启动应用（开发模式，支持热重载）
-   ```bash
-   uv run dev.py
-   ```
+```bash
+uv run main.py
+```
 
-## 打包为可执行程序
-完整的本地打包说明见 [HOW_TO_BUILD.md](file:///d:/Python/livp_viewer/HOW_TO_BUILD.md)。
+开发模式（文件保存后自动重启）：
 
-### GitHub Actions 远程打包（免装本地 C++ 工具链）
-仓库已提供 Windows 打包流水线：[build-windows.yml](file:///d:/Python/livp_viewer/.github/workflows/build-windows.yml)。
+```bash
+uv run dev.py
+```
 
-操作步骤：
-1. 推送代码到 GitHub
-2. 打开 Actions，选择 build-windows 并运行
-3. 下载 artifact：windows-exe
+## 打包
+
+### 本地打包
+
+```bash
+uv run flet build windows
+```
+
+构建产物在 `build/windows` 目录下。详细说明见 [HOW_TO_BUILD.md](HOW_TO_BUILD.md)。
+
+### GitHub Actions 远程打包
+
+仓库提供 Windows 打包流水线，构建完成后自动创建 GitHub Release：
+
+1. 在 `pyproject.toml` 中更新版本号
+2. 推送代码到 GitHub
+3. 打开 Actions → build-windows → Run workflow
+4. 构建完成后自动发布 Release 并附带打包好的 zip 文件
+
+## 项目结构
+
+| 文件 | 说明 |
+|------|------|
+| `main.py` | 应用入口，单实例控制 |
+| `viewer.py` | 主界面与交互逻辑 |
+| `parser.py` | .livp 文件解析、临时缓存管理、播放列表 |
+| `config.py` | 用户配置持久化（INI 格式） |
+| `dev.py` | 开发模式热重载脚本 |
+
+## 技术栈
+
+- [Flet](https://flet.dev/) — Python 跨平台桌面 UI 框架
+- [flet-video](https://pub.dev/packages/flet_video) — 视频播放组件
