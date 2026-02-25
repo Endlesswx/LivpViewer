@@ -340,7 +340,16 @@ class LivpViewerApp:
         if not livp_path:
             return
         filename = Path(livp_path).name
-        self.page.set_clipboard(filename)
+        try:
+            # 尝试直接使用 Flet 的剪贴板 API
+            if hasattr(self.page, "set_clipboard"):
+                self.page.set_clipboard(filename)
+            else:
+                raise AttributeError("Page has no set_clipboard")
+        except BaseException:
+            # 回退使用 Windows 原生 clip 命令
+            subprocess.run("clip", text=True, input=filename, creationflags=subprocess.CREATE_NO_WINDOW)
+            
         self._show_toast(f"已复制: {filename}")
 
     def _on_path_submit(self, e):
