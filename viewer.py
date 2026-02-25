@@ -34,6 +34,10 @@ class LivpViewerApp:
         # 加载用户配置
         self._user_config = load_config()
 
+        # 媒体交互状态
+        self._is_video_mode = False
+        self._current_video = None
+
         # 文件选择器
         self.file_picker = ft.FilePicker()
 
@@ -149,7 +153,10 @@ class LivpViewerApp:
             ft.Stack(
                 controls=[
                     ft.Column(
-                        controls=[self.media_container, control_bar],
+                        controls=[
+                            self.media_container,
+                            control_bar,
+                        ],
                         expand=True,
                         spacing=0,
                     ),
@@ -211,6 +218,19 @@ class LivpViewerApp:
         }
         save_config(settings)
 
+    def _wrap_with_gesture(self, content):
+        """将媒体内容包裹在手势检测器中，使其支持左键/右键/拖动操作。
+
+        子控件（如视频原生控制栏）优先接收事件，未处理的事件冒泡到手势检测器。
+        """
+        return ft.GestureDetector(
+            content=content,
+            on_tap=self._on_media_tap,
+            on_secondary_tap=self._on_media_right_click,
+            on_pan_start=self._on_media_pan_start,
+            expand=True,
+        )
+
     def load_media_to_ui(self):
         """根据播放列表当前指针，将对应的图片或视频加载到 UI 中展示。"""
         livp_path = self.playlist.get_current_live_photo_path()
@@ -254,9 +274,11 @@ class LivpViewerApp:
             self.page.update()
             return
 
-        self.media_container.content = ft.Image(
-            src=img_path, fit="contain", expand=True
+        self.media_container.content = self._wrap_with_gesture(
+            ft.Image(src=img_path, fit="contain", expand=True)
         )
+        self._is_video_mode = False
+        self._current_video = None
         self.btn_play.content = "播放视频"
         filename = Path(livp_path).name
         self.status_text.value = f"正在查看: {filename}"
@@ -296,7 +318,9 @@ class LivpViewerApp:
         )
 
         self._video_start_time = time.time()
-        self.media_container.content = video
+        self.media_container.content = self._wrap_with_gesture(video)
+        self._is_video_mode = True
+        self._current_video = video
         self.btn_play.content = "查看图片"
         filename = Path(livp_path).name
         self.status_text.value = f"正在查看: {filename}"
@@ -334,6 +358,23 @@ class LivpViewerApp:
 
     # --- 事件响应 ---
 
+    async def _on_media_tap(self, e):
+        """左键单击媒体区域：视频模式切换播放/暂停，图片模式开始播放视频。"""
+        if self._is_video_mode and self._current_video:
+            await self._current_video.play_or_pause()
+        else:
+            self.switch_to_video(autoplay=True)
+
+    def _on_media_right_click(self, e):
+        """右键单击媒体区域：切换全屏/非全屏。"""
+        self.page.window.full_screen = not self.page.window.full_screen
+        self.page.update()
+
+    async def _on_media_pan_start(self, e):
+        """拖动媒体区域：非全屏时移动窗口，全屏时忽略。"""
+        if not self.page.window.full_screen:
+            await self.page.window.start_dragging()
+
     def _on_filename_click(self, e):
         """处理文件名点击：将当前文件名复制到系统剪贴板。"""
         livp_path = self.playlist.get_current_live_photo_path()
@@ -364,7 +405,7 @@ class LivpViewerApp:
     def _on_loop_and_config_changed(self, e):
         """处理循环播放开关变更：保存配置并实时更新播放模式。"""
         self._save_current_config()
-        if isinstance(self.media_container.content, ftv.Video):
+        if self._is_video_mode:
             # 正在播放视频时切换了循环开关，重新加载视频以应用新的播放模式
             self.switch_to_video(autoplay=True)
 
@@ -396,7 +437,7 @@ class LivpViewerApp:
 
     def on_play_click(self, e):
         """处理"播放视频/查看图片"按钮点击：在图片和视频模式之间切换。"""
-        if isinstance(self.media_container.content, ftv.Video):
+        if self._is_video_mode:
             # 当前正在播放视频，切换回静态图片
             self.switch_to_image()
         else:
