@@ -415,4 +415,4 @@ class LivpViewerApp:
 
 def start_ui(page: ft.Page):
     """Flet 应用入口函数，创建 LivpViewerApp 实例。"""
-    LivpViewerApp(page)
+    return LivpViewerApp(page)

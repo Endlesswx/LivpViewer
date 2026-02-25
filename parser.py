@@ -5,6 +5,7 @@ parser.py
 """
 
 import hashlib
+import os
 import shutil
 import time
 import zipfile
@@ -130,13 +131,17 @@ class Playlist:
             return False
 
         directory = target_path.parent
-        self.files = sorted(
-            [
-                f
-                for f in directory.iterdir()
-                if f.is_file() and f.suffix.lower() == ".livp"
-            ]
-        )
+        try:
+            with os.scandir(directory) as it:
+                self.files = sorted(
+                    [
+                        Path(f.path)
+                        for f in it
+                        if f.is_file() and f.name.lower().endswith(".livp")
+                    ]
+                )
+        except OSError:
+            self.files = []
 
         if target_path in self.files:
             self.current_index = self.files.index(target_path)
