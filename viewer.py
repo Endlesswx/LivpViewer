@@ -5,6 +5,7 @@ viewer.py
 播放控制（上一张/下一张/播放/循环）、文件打开及配置持久化等功能。
 """
 
+import asyncio
 import subprocess
 import sys
 import threading
@@ -45,10 +46,32 @@ class LivpViewerApp:
             expand=True,
             bgcolor="black",
             alignment=ft.Alignment(0, 0),
+            visible=True,
+        )
+
+        self.grid_container = ft.Container(
+            expand=True,
+            bgcolor="black",
+            visible=False,
+            padding=10,
+            content=ft.GridView(
+                expand=True,
+                max_extent=200,
+                child_aspect_ratio=1.0,
+                spacing=10,
+                run_spacing=10,
+            )
         )
 
         # 状态文案（点击文件名可复制到剪贴板）
-        self.status_text = ft.Text("", size=16, color="grey400")
+        self.status_text = ft.Text(
+            "",
+            size=16,
+            color="grey400",
+            width=200,
+            no_wrap=True,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        )
         self.status_text_wrapper = ft.GestureDetector(
             content=self.status_text,
             on_tap=self._on_filename_click,
@@ -102,6 +125,13 @@ class LivpViewerApp:
         self.btn_open_location = ft.TextButton(
             "打开图片位置", on_click=self.on_open_location_click, disabled=True
         )
+        # 查看列表按钮：用 content 包载 Text 控件以支持动态修改文案
+        self._btn_view_all_label = ft.Text("查看列表")
+        self.btn_view_all = ft.TextButton(
+            content=self._btn_view_all_label,
+            on_click=self.on_view_all_click,
+            disabled=True,
+        )
 
         # 开关（从配置恢复状态）
         self.switch_auto_play = ft.Switch(
@@ -129,6 +159,7 @@ class LivpViewerApp:
                         [
                             ft.Row([self.switch_auto_play, ft.Text("自动播放视频")]),
                             ft.Row([self.switch_loop, ft.Text("循环播放")]),
+                            self.btn_view_all,
                         ]
                     ),
                 ],
@@ -154,6 +185,7 @@ class LivpViewerApp:
                     ft.Column(
                         controls=[
                             self.media_container,
+                            self.grid_container,
                             control_bar,
                         ],
                         expand=True,
@@ -241,6 +273,10 @@ class LivpViewerApp:
 
     def load_media_to_ui(self):
         """根据播放列表当前指针，将对应的图片或视频加载到 UI 中展示。"""
+        self.media_container.visible = True
+        self.grid_container.visible = False
+        self._btn_view_all_label.value = "查看列表"
+
         livp_path = self.playlist.get_current_live_photo_path()
 
         # 根据列表游标位置更新上/下翻页按钮的可用状态
@@ -248,6 +284,7 @@ class LivpViewerApp:
         self.btn_next.disabled = (
             self.playlist.current_index >= len(self.playlist.files) - 1
         )
+        self.btn_view_all.disabled = len(self.playlist.files) == 0
 
         if not livp_path:
             self.status_text.value = "没有找到或加载失败 .livp 文件"
@@ -258,7 +295,7 @@ class LivpViewerApp:
             return
 
         filename = Path(livp_path).name
-        self.status_text.value = f"正在查看: {filename}"
+        self.status_text.value = f"{filename}"
         self.btn_play.disabled = False
         self.btn_open_location.disabled = False
 
@@ -292,7 +329,7 @@ class LivpViewerApp:
         self._current_video = None
         self.btn_play.content = "播放视频"
         filename = Path(livp_path).name
-        self.status_text.value = f"正在查看: {filename}"
+        self.status_text.value = f"{filename}"
         self.page.update()
 
     def switch_to_video(self, autoplay=False):
@@ -337,7 +374,7 @@ class LivpViewerApp:
         self._current_video = video
         self.btn_play.content = "查看图片"
         filename = Path(livp_path).name
-        self.status_text.value = f"正在查看: {filename}"
+        self.status_text.value = f"{filename}"
         self.page.update()
 
     def _on_video_complete(self, e):
@@ -371,6 +408,57 @@ class LivpViewerApp:
             self.page.update()
 
     # --- 事件响应 ---
+
+    def on_view_all_click(self, e):
+        """处理“查看列表”按钮点击：在媒体视图和列表模式之间切换。"""
+        print(f"[DEBUG] on_view_all_click 被触发, grid visible={self.grid_container.visible}")
+        if self.grid_container.visible:
+            # 如果当前是列表模式，切换回媒体模式
+            self.media_container.visible = True
+            self.grid_container.visible = False
+            self._btn_view_all_label.value = "查看列表"
+            self.page.update()
+        else:
+            # 如果当前是媒体模式，构建并显示网格视图
+            self._build_and_show_gridview()
+
+    def _build_and_show_gridview(self):
+        """构建缩略图网格视图，逐个提取图片后刷新 UI（与 switch_to_image 保持相同的同步模式）。"""
+        print("[DEBUG] _build_and_show_gridview 被调用")
+        self.media_container.visible = False
+        self.grid_container.visible = True
+        self._btn_view_all_label.value = "关闭列表"
+
+        grid = self.grid_container.content
+        grid.controls.clear()
+        self.page.update()
+
+        for i, file_path in enumerate(self.playlist.files):
+
+            def make_click_handler(idx):
+                """生成点击缩略图跳转到对应文件的回调函数。"""
+                def _handle_click(e):
+                    self.playlist.current_index = idx
+                    self.load_media_to_ui()
+                return _handle_click
+
+            img_path = self.playlist.parser.extract_image(str(file_path))
+            if img_path:
+                thumbnail = ft.Image(src=img_path, fit="cover", border_radius=8, expand=True)
+            else:
+                thumbnail = ft.Icon(ft.Icons.BROKEN_IMAGE, color="grey500")
+
+            card = ft.GestureDetector(
+                content=ft.Container(
+                    content=thumbnail,
+                    bgcolor="grey900",
+                    border_radius=8,
+                    alignment=ft.Alignment(0, 0),
+                ),
+                on_tap=make_click_handler(i),
+            )
+            grid.controls.append(card)
+            self.page.update()
 
     async def _on_media_tap(self, e):
         """左键单击媒体区域：视频模式切换播放/暂停，图片模式开始播放视频。"""
