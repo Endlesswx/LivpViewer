@@ -25,6 +25,7 @@ class LivpViewerApp:
         """初始化应用界面和所有 UI 组件，加载用户配置。"""
         self.page = page
         self.page.title = "Livp Viewer"
+        self.page.window.icon = "LivpViewer.ico"
         self.page.theme_mode = "dark"
         self.page.padding = 0
 
@@ -205,8 +206,75 @@ class LivpViewerApp:
         # 释放系统资源的时机
         self.page.on_close = self.on_close
 
+        # 全局启动一次系统托盘图标
+        self._init_tray_icon()
+
         # 检查命令行参数（支持打包 EXE 后双击 .livp 文件关联打开）
         self._handle_cli_args()
+
+    def _init_tray_icon(self):
+        """初始化完整的系统托盘图标并驻留后台。生命周期跟随主进程。"""
+        def run_tray():
+            import pystray
+            from PIL import Image, ImageDraw
+
+            # 确保不会重复运行
+            if hasattr(self, "tray_icon") and self.tray_icon is not None:
+                try:
+                    self.tray_icon.stop()
+                except Exception:
+                    pass
+
+            def create_image():
+                # 优先尝试从 Flet 包内或者本地资源读取真实的窗口图标
+                try:
+                    import flet
+                    from pathlib import Path
+                    
+                    # 1. 如果用户提供了自定义的 assets/LivpViewer.ico
+                    user_icon = Path("assets/LivpViewer.ico")
+                    if user_icon.exists():
+                        return Image.open(str(user_icon))
+                    
+                    # 2. 尝试获取 flet 默认应用图标（与窗口左上角一致）
+                    flet_dir = Path(flet.__file__).parent
+                    # flet 包内部结构通常在 server 子目录或 bin 里有默认图标
+                    possible_paths = [
+                        flet_dir / "bin" / "flet" / "assets" / "favicon.png",
+                        flet_dir / "assets" / "favicon.png",
+                        flet_dir / "bin" / "assets" / "favicon.png"
+                    ]
+                    for path in possible_paths:
+                        if path.exists():
+                            return Image.open(str(path))
+                except Exception:
+                    pass
+                
+                # 3. 降级：绘制一个简单的纯色图标来代表 Livp Viewer
+                image = Image.new('RGB', (64, 64), color=(30, 30, 30))
+                d = ImageDraw.Draw(image)
+                d.rectangle([16, 16, 48, 48], fill=(64, 150, 255))
+                return image
+
+            def on_show(icon, item):
+                # 必须利用 Flet 线程分发机制调度到主线程执行前置操作
+                self.show_window()
+
+            def on_exit(icon, item):
+                icon.stop()
+                import os
+                # 直接终结进程
+                os._exit(0)
+
+            menu = pystray.Menu(
+                pystray.MenuItem("显示/隐藏窗口", action=on_show, default=True),
+                pystray.MenuItem("完全退出", action=on_exit)
+            )
+            self.tray_icon = pystray.Icon("LivpViewer", create_image(), "Livp Viewer", menu)
+            self.tray_icon.run()
+
+        # 需要在后台守护线程运行
+        threading.Thread(target=run_tray, daemon=True).start()
 
     def _show_toast(self, message: str, duration: float = 2.0):
         """在界面左上角显示一条短暂提示消息，duration 秒后自动消失。
@@ -229,25 +297,32 @@ class LivpViewerApp:
         timer.start()
 
     def _handle_cli_args(self):
-        """检查命令行参数，如果传入了 .livp 文件路径则自动打开。
+        """异步检查命令行参数，在 UI 渲染完成后加载文件，避免阻塞窗口显示。
 
         支持打包为 EXE 后，将 .livp 文件与 EXE 关联，双击 .livp 文件时
         Windows 会将文件路径作为第一个命令行参数传入。
         若没有命令行参数，则尝试恢复上次打开的文件。
+
+        使用 page.run_task 将文件解析推迟到事件循环中执行，
+        确保 UI 先完整渲染，用户可立即看到界面，再进行 IO 密集型的解压操作。
         """
-        for arg in sys.argv[1:]:
-            if arg.lower().endswith(".livp") and Path(arg).exists():
-                success = self.playlist.load_from_file(arg)
+        async def _load_async():
+            """在事件循环中延迟执行文件加载，避免阻塞 UI 初始渲染。"""
+            for arg in sys.argv[1:]:
+                if arg.lower().endswith(".livp") and Path(arg).exists():
+                    success = self.playlist.load_from_file(arg)
+                    if success:
+                        self.load_media_to_ui()
+                    return
+
+            # 没有命令行参数，尝试恢复上次打开的文件
+            last_file = self._user_config.get("last_file", "")
+            if last_file and Path(last_file).exists():
+                success = self.playlist.load_from_file(last_file)
                 if success:
                     self.load_media_to_ui()
-                return
 
-        # 没有命令行参数，尝试恢复上次打开的文件
-        last_file = self._user_config.get("last_file", "")
-        if last_file and Path(last_file).exists():
-            success = self.playlist.load_from_file(last_file)
-            if success:
-                self.load_media_to_ui()
+        self.page.run_task(_load_async)
 
     def _save_current_config(self):
         """将当前开关状态和最后打开的文件路径保存到 INI 配置文件。"""
@@ -411,7 +486,6 @@ class LivpViewerApp:
 
     def on_view_all_click(self, e):
         """处理“查看列表”按钮点击：在媒体视图和列表模式之间切换。"""
-        print(f"[DEBUG] on_view_all_click 被触发, grid visible={self.grid_container.visible}")
         if self.grid_container.visible:
             # 如果当前是列表模式，切换回媒体模式
             self.media_container.visible = True
@@ -424,7 +498,6 @@ class LivpViewerApp:
 
     def _build_and_show_gridview(self):
         """构建缩略图网格视图，逐个提取图片后刷新 UI（与 switch_to_image 保持相同的同步模式）。"""
-        print("[DEBUG] _build_and_show_gridview 被调用")
         self.media_container.visible = False
         self.grid_container.visible = True
         self._btn_view_all_label.value = "关闭列表"
@@ -552,6 +625,44 @@ class LivpViewerApp:
         if not livp_path:
             return
         subprocess.Popen(["explorer", "/select,", str(Path(livp_path))])
+
+    def hide_window(self) -> None:
+        """保存配置后将窗口隐藏，进程继续在后台驻留。
+
+        不退出进程，由 main.py 的 Socket WAKEUP 信号瞬间恢复窗口，
+        实现"第二次打开秒显示"的效果。
+        """
+        self._save_current_config()
+        self.page.window.visible = False
+        self.page.update()
+
+    def show_window(self) -> None:
+        """将隐藏在后台的窗口重新显示并置于前台。
+        如果是托盘图标的"显示/隐藏"菜单点击触发，则进行反转；被唤醒或加载文件时直接显示。
+
+        由 main.py 的 Socket 服务端在收到 WAKEUP 信号或文件路径时调用，
+        实现"再次打开近乎瞬间显示窗口"的效果。
+        """
+        # 利用 Flet 的异步调度器，避免系统托盘的外部线程更新 UI 导致假死
+        async def _safe_show():
+            if self.page.window.visible:
+                # 已经显示时，则主动隐藏（多用于托盘双击/点击）
+                self.hide_window()
+                return
+
+            # 不可见时，恢复窗口显示，并确保不要被最小化截断
+            self.page.window.minimized = False
+            self.page.window.visible = True
+            
+            # 使用同步方法抢占前台焦点
+            self.page.window.always_on_top = True
+            self.page.update()
+            
+            self.page.window.always_on_top = False
+            self.page.update()
+
+        # Flet 线程分发机制，把操作推到事件循环，跨线程也安全
+        self.page.run_task(_safe_show)
 
     def on_close(self, e):
         """应用关闭时保存配置并清理临时缓存文件。"""
