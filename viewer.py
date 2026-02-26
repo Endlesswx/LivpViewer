@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 
 import flet as ft
-import flet_video as ftv
 
 from config import load_config, save_config
 from parser import Playlist
@@ -312,6 +311,9 @@ class LivpViewerApp:
             self.status_text.value = "解析视频失败"
             self.page.update()
             return
+
+        # 延迟导入 flet_video 以加速程序冷启动
+        import flet_video as ftv
 
         # 根据循环开关决定播放模式
         if self.switch_loop.value:
