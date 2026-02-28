@@ -12,6 +12,15 @@ import zipfile
 import tempfile
 from pathlib import Path
 from typing import Optional, List
+import base64
+import io
+
+try:
+    from PIL import Image as PILImage
+except ImportError:
+    PILImage = None
+
+from thumbnail_cache import ThumbnailCache
 
 
 class LivpParser:
@@ -22,9 +31,11 @@ class LivpParser:
     """
 
     def __init__(self):
-        """初始化解析器，创建临时缓存目录。"""
+        """初始化解析器，创建临时缓存目录和 SQLite 缩略图缓存实例。"""
         self.temp_dir = Path(tempfile.gettempdir()) / "livp_viewer_cache"
         self._ensure_temp_dir()
+        # 初始化缩略图单文件缓存 (存放在用户目录或是应用同级，这里放在同级)
+        self.thumb_cache = ThumbnailCache()
 
     def _ensure_temp_dir(self):
         """确保临时缓存目录存在，不存在则创建。"""
@@ -72,6 +83,55 @@ class LivpParser:
                         return str(target.absolute())
         except Exception as e:
             print(f"Livp IMG 解析异常: {e}")
+        return None
+
+    def extract_thumbnail_base64(self, file_path: str) -> Optional[str]:
+        """专门用于缩略图列表的高效提取方法。
+        
+        首先查询 SQLite 单文件缓存，命中则直接返回 base64；
+        未命中则从 ZIP 提取图片的二进制流存入缓存，再返回 base64。
+        全程不会在硬盘上生成零散的临时图片文件。
+        """
+        try:
+            target_path = Path(file_path).absolute()
+            if not target_path.exists():
+                return None
+            mtime = target_path.stat().st_mtime
+            
+            # 1. 尝试从缓存直接拿二进制数据
+            cached_bytes = self.thumb_cache.get(str(target_path), mtime)
+            if cached_bytes:
+                return base64.b64encode(cached_bytes).decode('utf-8')
+            
+            # 2. 缓存未命中，执行昂贵的 ZIP 解包 IO
+            with zipfile.ZipFile(str(target_path), "r") as zf:
+                for file_info in zf.infolist():
+                    filename = file_info.filename.lower()
+                    if filename.endswith((".jpg", ".jpeg", ".heic")):
+                        with zf.open(file_info) as source:
+                            img_bytes = source.read()
+                            
+                            # 进行微缩采样处理，极大降低缓存体积与 UI 内存压力
+                            if PILImage:
+                                try:
+                                    with PILImage.open(io.BytesIO(img_bytes)) as pil_img:
+                                        # 针对 HEIC 格式的特别防御或直接转换 RGB
+                                        if pil_img.mode != "RGB":
+                                            pil_img = pil_img.convert("RGB")
+                                        pil_img.thumbnail((256, 256))
+                                        out_buffer = io.BytesIO()
+                                        pil_img.save(out_buffer, format="JPEG", quality=75)
+                                        img_bytes = out_buffer.getvalue()
+                                except Exception as e:
+                                    print(f"PIL 图片压缩失败 (可能不支持 HEIC 等)，回退原图缓存: {e}")
+
+                            # 异步塞进缓存（自动处理 LRU 和大小上限）
+                            self.thumb_cache.put(str(target_path), mtime, img_bytes)
+                            
+                            # 转成 Base64 返回给 Flet UI 呈现
+                            return base64.b64encode(img_bytes).decode('utf-8')
+        except Exception as e:
+            print(f"Livp 缩略图提取异常: {e}")
         return None
 
     def extract_video(self, file_path: str) -> Optional[str]:
@@ -133,13 +193,14 @@ class Playlist:
         directory = target_path.parent
         try:
             with os.scandir(directory) as it:
-                self.files = sorted(
-                    [
-                        Path(f.path)
-                        for f in it
-                        if f.is_file() and f.name.lower().endswith(".livp")
-                    ]
-                )
+                files_with_mtime = [
+                    (Path(f.path), f.stat().st_mtime)
+                    for f in it
+                    if f.is_file() and f.name.lower().endswith(".livp")
+                ]
+                # 按修改时间倒序排序（最新拍的放在最前面）
+                files_with_mtime.sort(key=lambda x: x[1], reverse=True)
+                self.files = [f[0] for f in files_with_mtime]
         except OSError:
             self.files = []
 
