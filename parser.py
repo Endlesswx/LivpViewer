@@ -17,8 +17,10 @@ import io
 
 try:
     from PIL import Image as PILImage
+    from PIL import ImageOps
 except ImportError:
     PILImage = None
+    ImageOps = None
 
 from thumbnail_cache import ThumbnailCache
 
@@ -115,6 +117,8 @@ class LivpParser:
                             if PILImage:
                                 try:
                                     with PILImage.open(io.BytesIO(img_bytes)) as pil_img:
+                                        if ImageOps:
+                                            pil_img = ImageOps.exif_transpose(pil_img)
                                         # 针对 HEIC 格式的特别防御或直接转换 RGB
                                         if pil_img.mode != "RGB":
                                             pil_img = pil_img.convert("RGB")
@@ -181,6 +185,8 @@ class LivpParser:
                                     if PILImage:
                                         try:
                                             with PILImage.open(io.BytesIO(img_bytes)) as pil_img:
+                                                if ImageOps:
+                                                    pil_img = ImageOps.exif_transpose(pil_img)
                                                 if pil_img.mode != "RGB":
                                                     pil_img = pil_img.convert("RGB")
                                                 pil_img.thumbnail((256, 256))

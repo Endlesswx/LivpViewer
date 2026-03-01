@@ -70,10 +70,17 @@ class LivpViewerApp:
         self.btn_page_next = ft.ElevatedButton("下一页", on_click=self._on_page_next_click)
         self.text_page_info = ft.Text("第 1 / 1 页", size=14, weight=ft.FontWeight.BOLD)
         
+        # 将显示页码的文本当作按钮，点击弹出跳转输入框
+        self.btn_page_info = ft.TextButton(
+            content=self.text_page_info,
+            on_click=self._on_page_info_click,
+            tooltip="点击此处手动输入页码跳转"
+        )
+        
         self.pagination_row = ft.Row(
             controls=[
                 self.btn_page_prev,
-                self.text_page_info,
+                self.btn_page_info,
                 self.btn_page_next,
             ],
             alignment=ft.MainAxisAlignment.CENTER,
@@ -264,6 +271,24 @@ class LivpViewerApp:
             )
         )
 
+        # 预先构建跳转弹窗组件到 overlay 中，以兼容无论什么版本的渲染模型
+        self.page_input = ft.TextField(
+            label="目标页码",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            autofocus=True,
+            on_submit=self._on_jump_submit_click
+        )
+        self.jump_dialog = ft.AlertDialog(
+            title=ft.Text("跳转至指定页"),
+            content=self.page_input,
+            actions=[
+                ft.TextButton("取消", on_click=self._close_jump_dialog),
+                ft.TextButton("跳转", on_click=self._on_jump_submit_click),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.overlay.append(self.jump_dialog)
+
         # 释放系统资源的时机
         self.page.on_close = self.on_close
 
@@ -323,9 +348,25 @@ class LivpViewerApp:
 
             def on_exit(icon, item):
                 icon.stop()
-                import os
-                # 直接终结进程
-                os._exit(0)
+                
+                # 安全退出逻辑：先调用 Flet 的 destroy() 优雅终止 Webview 引擎，
+                # 延时 0.5s 后执行强硬的 os._exit()，确保死循环的 socket 服务器和终端彻底关闭。
+                def _safe_exit():
+                    self._cancel_grid_load = True
+                    self._save_current_config()
+                    self.playlist.cleanup()
+                    
+                    if hasattr(self.page, "window_destroy"):
+                        self.page.window_destroy()
+                    elif hasattr(self.page, "window_close"):
+                        self.page.window_close()
+                        
+                    # 创建并启动 0.5 秒钟的自爆定时器
+                    import os
+                    threading.Timer(0.5, lambda: os._exit(0)).start()
+                        
+                # 托盘回调发生在辅助线程，必须发回到 Flet 事件循环中去执行 UI 层的退出
+                self.page.run_task(_safe_exit)
 
             menu = pystray.Menu(
                 pystray.MenuItem("显示/隐藏窗口", action=on_show, default=True),
@@ -709,6 +750,47 @@ class LivpViewerApp:
         """列表下一页"""
         self._cancel_grid_load = True
         self._current_page_index += 1
+        self._cancel_grid_load = False
+        self.page.run_task(self._load_current_page)
+
+    async def _on_page_info_click(self, e):
+        """点击页码提示：弹出输入框让用户手动跳转到指定页。"""
+        total = len(self.playlist.files)
+        if total == 0:
+            return
+            
+        total_pages = (total + self._items_per_page - 1) // self._items_per_page
+        
+        # 仅仅更新限制展示和清空内容，开窗
+        self.page_input.label = f"目标页码 (1 - {total_pages})"
+        self.page_input.value = ""
+        self.jump_dialog.open = True
+        self.page.update()
+
+    async def _close_jump_dialog(self, e=None):
+        """关闭当前的对话框。"""
+        self.jump_dialog.open = False
+        self.page.update()
+
+    async def _on_jump_submit_click(self, e):
+        """处理跳转页码的输入和执行加载"""
+        val = self.page_input.value.strip()
+        if not val.isdigit():
+            self._show_toast("请输入正确的正整数页码！")
+            return
+            
+        total = len(self.playlist.files)
+        total_pages = (total + self._items_per_page - 1) // self._items_per_page
+        target_page = int(val)
+        
+        if target_page < 1 or target_page > total_pages:
+            self._show_toast(f"页码超出范围，请输入 1 到 {total_pages} 之间的数字！")
+            return
+            
+        await self._close_jump_dialog()
+        # 将人类阅读的从 1 开始的页码转化为数组 0 开始的 index
+        self._cancel_grid_load = True
+        self._current_page_index = target_page - 1
         self._cancel_grid_load = False
         self.page.run_task(self._load_current_page)
 
