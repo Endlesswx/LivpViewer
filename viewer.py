@@ -62,6 +62,24 @@ class LivpViewerApp:
         self.loading_text = ft.Text("0 / 0", width=80, text_align=ft.TextAlign.RIGHT)
         self.loading_row = ft.Row([self.loading_progress, self.loading_text], visible=False)
 
+        # 分页组件 (Pagination)
+        self._current_page_index = 0
+        self._items_per_page = 45 # 适合各种网格大小并且对 DOM 不再有压力
+        
+        self.btn_page_prev = ft.ElevatedButton("上一页", on_click=self._on_page_prev_click)
+        self.btn_page_next = ft.ElevatedButton("下一页", on_click=self._on_page_next_click)
+        self.text_page_info = ft.Text("第 1 / 1 页", size=14, weight=ft.FontWeight.BOLD)
+        
+        self.pagination_row = ft.Row(
+            controls=[
+                self.btn_page_prev,
+                self.text_page_info,
+                self.btn_page_next,
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            visible=False,
+        )
+
         self.grid_container = ft.Container(
             expand=True,
             bgcolor="black",
@@ -86,6 +104,8 @@ class LivpViewerApp:
                             )
                         )
                     ),
+                    ft.Container(height=10),
+                    self.pagination_row,
                 ],
                 expand=True,
             )
@@ -94,9 +114,8 @@ class LivpViewerApp:
         # 列表异步加载的中断标志
         self._cancel_grid_load = False
 
-        # 用于记忆上一次成功加载的播放列表，实现 DOM 网格复用（分页时不完全依赖此复用，但保留防止切回时白闪）
+        # 废弃原先按全列表缓存比对的机制，仅作为数据检查源
         self._last_loaded_playlist = []
-        self._last_loaded_page = 0
 
         # 状态文案（点击文件名可复制到剪贴板）
         self.status_text = ft.Text(
@@ -393,10 +412,12 @@ class LivpViewerApp:
         self.media_container.visible = True
         self.grid_container.visible = False
         
-        # 核心修复 1：离开列表视图时，立即清空由几千个 Placeholder 构成的 DOM 树
-        # 防止页面任意全局 update() 再次引发无意义的长列表 Diff，消除卡顿
+        # 核心修复 1：离开列表视图时，立即清空单页的 DOM 树
         if len(self.grid_view.controls) > 0:
              self.grid_view.controls.clear()
+             
+        self.loading_row.visible = False
+        self.pagination_row.visible = False
 
         self._btn_view_all_label.value = "查看列表"
 
@@ -552,7 +573,7 @@ class LivpViewerApp:
             self.page.run_task(self._build_and_show_gridview_async)
 
     async def _build_and_show_gridview_async(self):
-        """异步构建缩略图分页网格视图，允许中断，防止大文件夹加载导致 Flet 底层 RPC / 内存溢出卡死。"""
+        """异步构建缩略图分页网格视图。使用分页限制 DOM 树的大小，杜绝卡顿。"""
         self.media_container.visible = False
         self.grid_container.visible = True
         self._btn_view_all_label.value = "关闭列表"
@@ -565,98 +586,131 @@ class LivpViewerApp:
         total = len(self.playlist.files)
         self.status_text.value = f"共 {total} 张照片"
 
-        if (self._last_loaded_playlist == self.playlist.files and 
-            len(self.grid_view.controls) > 0):
-            # 播放列表未改变且有缓存的 DOM 控件，直接复用
-            self.loading_row.visible = False
+        if self._last_loaded_playlist != self.playlist.files:
+            self._last_loaded_playlist = self.playlist.files.copy()
+            # 跳转到当前正在播放的任务所在的分页
+            if total > 0:
+                self._current_page_index = self.playlist.current_index // self._items_per_page
+            else:
+                self._current_page_index = 0
+
+        await self._load_current_page()
+
+    async def _load_current_page(self):
+        """加载当前切片页的缩略图到 DOM"""
+        total = len(self.playlist.files)
+        if total == 0:
+            self.grid_view.controls.clear()
+            self.pagination_row.visible = False
             self.page.update()
             return
 
-        self._last_loaded_playlist = self.playlist.files.copy()
+        total_pages = (total + self._items_per_page - 1) // self._items_per_page
+        
+        # 安全修正边界
+        if self._current_page_index >= total_pages:
+            self._current_page_index = max(0, total_pages - 1)
+        elif self._current_page_index < 0:
+            self._current_page_index = 0
 
-        # --- 阶段 1：瞬间建立骨架屏占位 ---
+        start_idx = self._current_page_index * self._items_per_page
+        end_idx = min(start_idx + self._items_per_page, total)
+        current_page_files = self.playlist.files[start_idx:end_idx]
+
+        # 更新分页控件
+        self.text_page_info.value = f"第 {self._current_page_index + 1} / {total_pages} 页"
+        self.btn_page_prev.disabled = (self._current_page_index <= 0)
+        self.btn_page_next.disabled = (self._current_page_index >= total_pages - 1)
+        self.pagination_row.visible = True
+
         self.grid_view.controls.clear()
         
-        if total > 0:
-            self.loading_row.visible = True
-            self.loading_progress.value = 0
-            self.loading_text.value = f"0 / {total}"
-            
-            def make_click_handler(idx):
-                """生成点击缩略图跳转到对应文件的回调函数。"""
-                async def _handle_click(e):
-                    self._cancel_grid_load = True
-                    self.playlist.current_index = idx
-                    await self.load_media_to_ui()
-                return _handle_click
+        self.loading_row.visible = True
+        self.loading_progress.value = 0
+        self.loading_text.value = f"0 / {len(current_page_files)}"
 
-            placeholders = []
-            for i in range(total):
-                # 创设一个纯灰色的空框，挂在列表上
-                card = ft.GestureDetector(
-                    content=ft.Stack(
-                        controls=[
-                            ft.Container(bgcolor="grey900", border_radius=8),
-                            ft.Text(f"{i + 1}", size=12, color="white", weight=ft.FontWeight.BOLD, right=4, top=4)
-                        ],
-                        expand=True,
-                    ),
-                    on_tap=make_click_handler(i),
-                )
-                placeholders.append(card)
+        def make_click_handler(idx):
+            """生成点击缩略图跳转到对应文件的回调函数。"""
+            async def _handle_click(e):
+                self._cancel_grid_load = True
+                self.playlist.current_index = idx
+                await self.load_media_to_ui()
+            return _handle_click
+
+        placeholders = []
+        for i in range(len(current_page_files)):
+            global_idx = start_idx + i
+            card = ft.GestureDetector(
+                content=ft.Stack(
+                    controls=[
+                        ft.Container(bgcolor="grey900", border_radius=8),
+                        ft.Text(f"{global_idx + 1}", size=12, color="white", weight=ft.FontWeight.BOLD, right=4, top=4)
+                    ],
+                    expand=True,
+                ),
+                on_tap=make_click_handler(global_idx),
+            )
+            placeholders.append(card)
+            
+        self.grid_view.controls.extend(placeholders)
+        self.page.update() # 这一步渲染极为迅速，因为最多只有 45 个骨架屏！
+
+        # --- 阶段 2：后台真正加载替换 ---
+        BATCH_SIZE = 15 # 控制并发和刷新频率
+        page_total = len(current_page_files)
+        
+        for batch_start_local in range(0, page_total, BATCH_SIZE):
+            if self._cancel_grid_load:
+                break
                 
-            self.grid_view.controls.extend(placeholders)
-            self.page.update() # 这一步通常在小零点几秒内完成，渲染引擎立刻得到所有的灰色卡位，并激活长滚动条
-
-            # --- 阶段 2：后台微批次真正加载替换 ---
-            BATCH_SIZE = 45 # 由于采用了批量查库，将批次大小提升 3 倍以加速呈现
+            batch_end_local = min(batch_start_local + BATCH_SIZE, page_total)
+            batch_files = current_page_files[batch_start_local:batch_end_local]
             
-            for batch_start in range(0, total, BATCH_SIZE):
+            for local_i, file_path_obj in enumerate(batch_files):
                 if self._cancel_grid_load:
                     break
                     
-                batch_end = min(batch_start + BATCH_SIZE, total)
-                batch_files = self.playlist.files[batch_start:batch_end]
+                target_i = batch_start_local + local_i
                 
-                # 将原来不可打断的一整个 batch to_thread 拆解为细粒度循环，随时响应关闭
-                for local_i, file_path_obj in enumerate(batch_files):
-                    if self._cancel_grid_load:
-                        break
-                        
-                    global_i = batch_start + local_i
-                    
-                    # 单次释放到线程池的时间极短
-                    img_b64 = await asyncio.to_thread(
-                        self.playlist.parser.extract_single_thumbnail, 
-                        file_path_obj
-                    )
+                img_b64 = await asyncio.to_thread(
+                    self.playlist.parser.extract_single_thumbnail, 
+                    file_path_obj
+                )
 
-                    if self._cancel_grid_load:
-                        break
-                    
-                    if img_b64:
-                        thumbnail = ft.Image(src=f"data:image/jpeg;base64,{img_b64}", fit="cover", border_radius=8)
-                    else:
-                        thumbnail = ft.Icon(ft.Icons.BROKEN_IMAGE, color="grey500")
-
-                    # 获取对应位置的 Placeholder 的 Stack
-                    stack_control = self.grid_view.controls[global_i].content
-                    # 替换底层 Container(index=0) 为真实图像结构
-                    stack_control.controls[0] = thumbnail
-                    # 仅需要对修改的单张卡片做最小程度的树状刷新
-                    self.grid_view.controls[global_i].update()
-
-                # 刷新本页的加载总进度，局部刷新 progressbar 避免操作闪烁
-                self.loading_progress.value = batch_end / total
-                self.loading_text.value = f"{batch_end} / {total}"
-                self.loading_row.update()
+                if self._cancel_grid_load:
+                    break
                 
-                # 3. 极短休眠让出事件循环（此时无大量的 RPC 添加指令，仅是替换极快，不会卡死）
-                await asyncio.sleep(0.01)
+                if img_b64:
+                    thumbnail = ft.Image(src=f"data:image/jpeg;base64,{img_b64}", fit="cover", border_radius=8)
+                else:
+                    thumbnail = ft.Icon(ft.Icons.BROKEN_IMAGE, color="grey500")
 
-        # 循环结束（或被打断）后收尾
+                stack_control = self.grid_view.controls[target_i].content
+                stack_control.controls[0] = thumbnail
+                self.grid_view.controls[target_i].update()
+
+            self.loading_progress.value = batch_end_local / page_total
+            self.loading_text.value = f"{batch_end_local} / {page_total}"
+            self.loading_row.update()
+            
+            await asyncio.sleep(0.01)
+
         self.loading_row.visible = False
         self.page.update()
+
+    async def _on_page_prev_click(self, e):
+        """列表上一页"""
+        self._cancel_grid_load = True
+        self._current_page_index -= 1
+        self._cancel_grid_load = False
+        self.page.run_task(self._load_current_page)
+
+    async def _on_page_next_click(self, e):
+        """列表下一页"""
+        self._cancel_grid_load = True
+        self._current_page_index += 1
+        self._cancel_grid_load = False
+        self.page.run_task(self._load_current_page)
 
     async def _on_media_tap(self, e):
         """左键单击媒体区域：视频模式切换播放/暂停，图片模式开始播放视频。"""
