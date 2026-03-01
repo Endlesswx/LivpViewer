@@ -352,17 +352,17 @@ class LivpViewerApp:
             """在事件循环中延迟执行文件加载，避免阻塞 UI 初始渲染。"""
             for arg in sys.argv[1:]:
                 if arg.lower().endswith(".livp") and Path(arg).exists():
-                    success = self.playlist.load_from_file(arg)
+                    success = await asyncio.to_thread(self.playlist.load_from_file, arg)
                     if success:
-                        self.load_media_to_ui()
+                        await self.load_media_to_ui()
                     return
 
             # 没有命令行参数，尝试恢复上次打开的文件
             last_file = self._user_config.get("last_file", "")
             if last_file and Path(last_file).exists():
-                success = self.playlist.load_from_file(last_file)
+                success = await asyncio.to_thread(self.playlist.load_from_file, last_file)
                 if success:
-                    self.load_media_to_ui()
+                    await self.load_media_to_ui()
 
         self.page.run_task(_load_async)
 
@@ -388,10 +388,16 @@ class LivpViewerApp:
             expand=True,
         )
 
-    def load_media_to_ui(self):
+    async def load_media_to_ui(self):
         """根据播放列表当前指针，将对应的图片或视频加载到 UI 中展示。"""
         self.media_container.visible = True
         self.grid_container.visible = False
+        
+        # 核心修复 1：离开列表视图时，立即清空由几千个 Placeholder 构成的 DOM 树
+        # 防止页面任意全局 update() 再次引发无意义的长列表 Diff，消除卡顿
+        if len(self.grid_view.controls) > 0:
+             self.grid_view.controls.clear()
+
         self._btn_view_all_label.value = "查看列表"
 
         livp_path = self.playlist.get_current_live_photo_path()
@@ -421,19 +427,22 @@ class LivpViewerApp:
 
         if self.switch_auto_play.value:
             # 用户要求打开时直接播放视频
-            self.switch_to_video(autoplay=True)
+            await self.switch_to_video(autoplay=True)
         else:
             # 默认显示静态图片
-            self.switch_to_image()
+            await self.switch_to_image()
 
-    def switch_to_image(self):
+    async def switch_to_image(self):
         """从当前 .livp 文件提取静态图片并展示在媒体区域。"""
         livp_path = self.playlist.get_current_live_photo_path()
         if not livp_path:
             return
         self.status_text.value = "正在解析图片..."
-        self.page.update()
-        img_path = self.playlist.parser.extract_image(livp_path)
+        self.status_text.update() # 局部快速刷新，避免 page.update 卡顿
+        
+        # 核心修复 2：将耗时的读取解压剥离到线程池，释放主线程的 asyncio 轮询，保证 UI 不冻结
+        img_path = await asyncio.to_thread(self.playlist.parser.extract_image, livp_path)
+        
         if not img_path:
             self.status_text.value = "解析图片失败"
             self.page.update()
@@ -449,7 +458,7 @@ class LivpViewerApp:
         self.status_text.value = f"{filename}"
         self.page.update()
 
-    def switch_to_video(self, autoplay=False):
+    async def switch_to_video(self, autoplay=False):
         """从当前 .livp 文件提取视频并在媒体区域播放。
 
         根据循环播放开关的状态，使用 PlaylistMode.SINGLE（单曲循环）
@@ -459,8 +468,10 @@ class LivpViewerApp:
         if not livp_path:
             return
         self.status_text.value = "正在解析视频..."
-        self.page.update()
-        vid_path = self.playlist.parser.extract_video(livp_path)
+        self.status_text.update()
+        
+        vid_path = await asyncio.to_thread(self.playlist.parser.extract_video, livp_path)
+        
         if not vid_path:
             self.status_text.value = "解析视频失败"
             self.page.update()
@@ -499,9 +510,9 @@ class LivpViewerApp:
         if hasattr(self, '_video_start_time') and time.time() - self._video_start_time < 0.5:
             # 忽略刚加载时因底层播放器时长未就绪而瞬间触发的虚假 complete 事件
             return
-        self.switch_to_image()
+        self.page.run_task(self.switch_to_image)
 
-    def _open_file_by_path(self, file_path: str):
+    async def _open_file_by_path(self, file_path: str):
         """根据文件路径加载 .livp 文件并显示到界面。
 
         Args:
@@ -517,16 +528,16 @@ class LivpViewerApp:
             self.page.update()
             return
 
-        success = self.playlist.load_from_file(str(resolved))
+        success = await asyncio.to_thread(self.playlist.load_from_file, str(resolved))
         if success:
-            self.load_media_to_ui()
+            await self.load_media_to_ui()
         else:
             self.status_text.value = "加载文件失败"
-            self.page.update()
+            self.status_text.update()
 
     # --- 事件响应 ---
 
-    def on_view_all_click(self, e):
+    async def on_view_all_click(self, e):
         """处理“查看列表”按钮点击：在媒体视图和列表模式之间切换。"""
         if self.grid_container.visible:
             # 如果当前是列表模式，中断可能正在进行的加载并切换回媒体模式
@@ -534,7 +545,7 @@ class LivpViewerApp:
             
             self._btn_view_all_label.value = "查看列表"
             # 从列表页退出，重新加载并刷新媒体状态（利用它恢复已禁用的按钮）
-            self.load_media_to_ui()
+            await self.load_media_to_ui()
         else:
             # 如果当前是媒体模式，构建并显示网格视图
             self._cancel_grid_load = False
@@ -573,10 +584,10 @@ class LivpViewerApp:
             
             def make_click_handler(idx):
                 """生成点击缩略图跳转到对应文件的回调函数。"""
-                def _handle_click(e):
+                async def _handle_click(e):
                     self._cancel_grid_load = True
                     self.playlist.current_index = idx
-                    self.load_media_to_ui()
+                    await self.load_media_to_ui()
                 return _handle_click
 
             placeholders = []
@@ -652,7 +663,7 @@ class LivpViewerApp:
         if self._is_video_mode and self._current_video:
             await self._current_video.play_or_pause()
         else:
-            self.switch_to_video(autoplay=True)
+            await self.switch_to_video(autoplay=True)
 
     def _on_media_right_click(self, e):
         """右键单击媒体区域：切换全屏/非全屏。"""
@@ -682,21 +693,21 @@ class LivpViewerApp:
             
         self._show_toast(f"已复制: {filename}")
 
-    def _on_path_submit(self, e):
+    async def _on_path_submit(self, e):
         """处理路径输入框回车提交：根据输入的路径打开文件。"""
         if e.control.value:
-            self._open_file_by_path(e.control.value)
+            await self._open_file_by_path(e.control.value)
 
     def _on_config_changed(self, e):
         """处理配置开关变更：保存当前配置到 INI 文件。"""
         self._save_current_config()
 
-    def _on_loop_and_config_changed(self, e):
+    async def _on_loop_and_config_changed(self, e):
         """处理循环播放开关变更：保存配置并实时更新播放模式。"""
         self._save_current_config()
         if self._is_video_mode:
             # 正在播放视频时切换了循环开关，重新加载视频以应用新的播放模式
-            self.switch_to_video(autoplay=True)
+            await self.switch_to_video(autoplay=True)
 
     async def on_btn_open_click(self, e):
         """处理"打开文件"按钮点击：弹出文件选择对话框选择 .livp 文件。"""
@@ -709,29 +720,29 @@ class LivpViewerApp:
             if files and len(files) > 0:
                 picked_path = files[0].path
                 if picked_path:
-                    self._open_file_by_path(picked_path)
+                    await self._open_file_by_path(picked_path)
         except Exception as ex:
             self.status_text.value = f"打开文件失败: {ex}"
             self.page.update()
 
-    def on_prev_click(self, e):
+    async def on_prev_click(self, e):
         """处理"上一张"按钮点击：切换到播放列表中的前一个文件。"""
         if self.playlist.prev():
-            self.load_media_to_ui()
+            await self.load_media_to_ui()
 
-    def on_next_click(self, e):
+    async def on_next_click(self, e):
         """处理"下一张"按钮点击：切换到播放列表中的后一个文件。"""
         if self.playlist.next():
-            self.load_media_to_ui()
+            await self.load_media_to_ui()
 
-    def on_play_click(self, e):
+    async def on_play_click(self, e):
         """处理"播放视频/查看图片"按钮点击：在图片和视频模式之间切换。"""
         if self._is_video_mode:
             # 当前正在播放视频，切换回静态图片
-            self.switch_to_image()
+            await self.switch_to_image()
         else:
             # 当前显示静态图片，切换到视频播放
-            self.switch_to_video(autoplay=True)
+            await self.switch_to_video(autoplay=True)
 
     def on_open_location_click(self, e):
         """处理"打开图片位置"按钮点击：在 Windows 资源管理器中定位到原始文件。"""
@@ -747,6 +758,11 @@ class LivpViewerApp:
         实现"第二次打开秒显示"的效果。
         """
         self._cancel_grid_load = True
+        
+        # 核心修复 1 关联位置：窗口收起后台时，彻底卸载列表大内存组件
+        if len(self.grid_view.controls) > 0:
+            self.grid_view.controls.clear()
+            
         self._save_current_config()
         self.page.window.visible = False
         self.page.update()

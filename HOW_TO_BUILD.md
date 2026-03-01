@@ -18,6 +18,9 @@ uv run main.py
 **前置要求**：
 - Windows 系统
 - 需要 `uv` 环境安装好所有依赖。
+- 安装 Microsoft C++ Build Tools：https://aka.ms/vs/stable/vs_BuildTools.exe
+- 安装 Visual C++ Redistributable：https://aka.ms/vc14/vc_redist.x64.exe
+- 将C:\Windows\System32\vcruntime140_1.dll复制到C:\Windows\SysWOW64\vcruntime140_1.dll
 
 **操作步骤**：
 在项目根目录 `d:\Python\livp_viewer\` 执行以下命令：

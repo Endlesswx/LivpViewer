@@ -85,9 +85,11 @@ def start_single_instance_server(app_instance) -> None:
                     # 收到唤醒信号，恢复窗口显示
                     app_instance.show_window()
                 elif message:
-                    # 收到文件路径，打开对应文件并显示窗口
-                    app_instance._open_file_by_path(message)
-                    app_instance.show_window()
+                    # 收到文件路径，发给事件循环异步处理打开，并随后显示窗口
+                    async def _open_and_show():
+                        await app_instance._open_file_by_path(message)
+                        app_instance.show_window()
+                    app_instance.page.run_task(_open_and_show)
             except Exception as e:
                 print(f"处理客户端连接异常: {e}")
 
