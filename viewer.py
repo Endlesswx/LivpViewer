@@ -56,6 +56,7 @@ class LivpViewerApp:
             child_aspect_ratio=1.0,
             spacing=10,
             run_spacing=10,
+            padding=ft.padding.only(right=12),
         )
         self.loading_progress = ft.ProgressBar(value=0, color="amber", bgcolor="#eeeeee", expand=True)
         self.loading_text = ft.Text("0 / 0", width=80, text_align=ft.TextAlign.RIGHT)
@@ -65,11 +66,26 @@ class LivpViewerApp:
             expand=True,
             bgcolor="black",
             visible=False,
-            padding=10,
+            padding=ft.padding.only(left=10, top=10, bottom=10, right=0),
             content=ft.Column(
                 controls=[
                     self.loading_row,
-                    self.grid_view,
+                    ft.Container(
+                        content=self.grid_view,
+                        expand=True,
+                        theme=ft.Theme(
+                            scrollbar_theme=ft.ScrollbarTheme(
+                                track_visibility=True,
+                                track_color=ft.Colors.with_opacity(0.1, ft.Colors.WHITE),
+                                thumb_visibility=True,
+                                thumb_color=ft.Colors.with_opacity(0.5, ft.Colors.WHITE),
+                                thickness=6,
+                                radius=10,
+                                cross_axis_margin=2,
+                                main_axis_margin=2,
+                            )
+                        )
+                    ),
                 ],
                 expand=True,
             )
@@ -591,15 +607,21 @@ class LivpViewerApp:
                 batch_end = min(batch_start + BATCH_SIZE, total)
                 batch_files = self.playlist.files[batch_start:batch_end]
                 
-                # 1. 后台整个批次一起推给数据库/解压器
-                batch_b64_results = await asyncio.to_thread(
-                    self.playlist.parser.extract_thumbnails_base64_batch, 
-                    batch_files
-                )
-
-                # 2. 定点替换占位符内容
-                for local_i, img_b64 in enumerate(batch_b64_results):
+                # 将原来不可打断的一整个 batch to_thread 拆解为细粒度循环，随时响应关闭
+                for local_i, file_path_obj in enumerate(batch_files):
+                    if self._cancel_grid_load:
+                        break
+                        
                     global_i = batch_start + local_i
+                    
+                    # 单次释放到线程池的时间极短
+                    img_b64 = await asyncio.to_thread(
+                        self.playlist.parser.extract_single_thumbnail, 
+                        file_path_obj
+                    )
+
+                    if self._cancel_grid_load:
+                        break
                     
                     if img_b64:
                         thumbnail = ft.Image(src=f"data:image/jpeg;base64,{img_b64}", fit="cover", border_radius=8)
@@ -724,6 +746,7 @@ class LivpViewerApp:
         不退出进程，由 main.py 的 Socket WAKEUP 信号瞬间恢复窗口，
         实现"第二次打开秒显示"的效果。
         """
+        self._cancel_grid_load = True
         self._save_current_config()
         self.page.window.visible = False
         self.page.update()
@@ -758,6 +781,7 @@ class LivpViewerApp:
 
     def on_close(self, e):
         """应用关闭时保存配置并清理临时缓存文件。"""
+        self._cancel_grid_load = True
         self._save_current_config()
         self.playlist.cleanup()
         if hasattr(self.page, "window_destroy"):

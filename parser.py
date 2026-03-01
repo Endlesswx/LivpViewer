@@ -226,6 +226,10 @@ class LivpParser:
             print(f"Livp VID 解析异常: {e}")
         return None
 
+    def extract_single_thumbnail(self, path_obj: Path) -> Optional[str]:
+        """提取单个文件的缩略图（用于提供给外部微批次循环调用以防主线程被大批次耗时阻塞）。"""
+        res = self.extract_thumbnails_base64_batch([path_obj])
+        return res[0] if res else None
 
 class Playlist:
     """管理同级目录下所有 .livp 文件的播放列表。
