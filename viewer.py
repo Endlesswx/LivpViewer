@@ -582,7 +582,7 @@ class LivpViewerApp:
             self.page.update() # 这一步通常在小零点几秒内完成，渲染引擎立刻得到所有的灰色卡位，并激活长滚动条
 
             # --- 阶段 2：后台微批次真正加载替换 ---
-            BATCH_SIZE = 15
+            BATCH_SIZE = 45 # 由于采用了批量查库，将批次大小提升 3 倍以加速呈现
             
             for batch_start in range(0, total, BATCH_SIZE):
                 if self._cancel_grid_load:
@@ -591,12 +591,11 @@ class LivpViewerApp:
                 batch_end = min(batch_start + BATCH_SIZE, total)
                 batch_files = self.playlist.files[batch_start:batch_end]
                 
-                # 1. 后台并发获取这十几张图的 Base64 数据
-                tasks = [
-                    asyncio.to_thread(self.playlist.parser.extract_thumbnail_base64, str(fp))
-                    for fp in batch_files
-                ]
-                batch_b64_results = await asyncio.gather(*tasks)
+                # 1. 后台整个批次一起推给数据库/解压器
+                batch_b64_results = await asyncio.to_thread(
+                    self.playlist.parser.extract_thumbnails_base64_batch, 
+                    batch_files
+                )
 
                 # 2. 定点替换占位符内容
                 for local_i, img_b64 in enumerate(batch_b64_results):
